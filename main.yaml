@@ -1,0 +1,90 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: heapdump
+  name: dump
+spec:
+  ports:
+  - port: 8080
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    app: heapdump
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluentdconf
+data:
+  fluent.conf: |
+      <source>
+        type tail
+        format none
+        path /var/log/jvm-thread-*.log
+        pos_file /var/log/1.log.pos
+        tag count.format1
+      </source>
+
+      <source>
+        type tail
+        format none
+        path /var/log/2.log
+        pos_file /var/log/2.log.pos
+        tag count.format2
+      </source>
+
+      <match **>
+        type google_cloud
+      </match>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: your-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: heapdump
+  template:
+    metadata:
+      labels:
+        app: heapdump
+    spec:
+      containers:
+      - name: spring
+        image: sagar27/spring:latest
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+         - name: heapdump
+           mountPath: /heapdump/
+      - name: fluent
+        image: k8s.gcr.io/fluentd-gcp:1.30
+        env:
+         - name: FLUENTD_ARGS
+           value: -c /etc/fluent/fluent.conf
+        args:
+        - /bin/sh
+        - -c
+        - >
+          while true;
+          do
+           curl 'http://localhost:8080/actuator/threaddump' -i -X GET -H 'Accept: application/json' > "/var/log/jvm-thread-$(date +'%d-%m-%Y-%H-%M').log"
+          sleep 1m;
+          done
+
+        volumeMounts:
+         - name: heapdump
+           mountPath: /heapdump/
+         - name: fluentd-conf
+           mountPath: /etc/fluent
+      volumes:
+        - name: heapdump
+          emptyDir: {}
+        - name: fluentd-conf
+          configMap:
+            name: fluentdconf
